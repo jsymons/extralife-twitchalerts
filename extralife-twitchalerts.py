@@ -12,6 +12,8 @@ from flask import Flask, redirect, abort, request
 
 import shelve
 
+import threading
+
 import logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
@@ -25,7 +27,9 @@ donation_uri="https://www.twitchalerts.com/api/v1.0/donations"
 scope='donations.create'
 redirect_uri="http://localhost:8080/twitchalerts"
 token_expiry = 3600
+default_refresh = 60
 headers={'content-type': 'application/json'}
+
 
 
 app = Flask(__name__)
@@ -73,13 +77,12 @@ def control():
 			page += str(result)
 		elif request.form['action'] == 'config':
 			write_setting('donations_page',request.form['donations_page'])
-			write_setting('refresh',request.form['refresh'])
+			write_setting('refresh',int(request.form['refresh']))
 			page += "<p>Settings updated.</p>"
 		elif request.form['action'] == 'test_extralife':
 			donations = get_extralife_donations()
 			for d in donations:
-				post_donation(**d)
-				print_donation(d)
+				post_donation(override=True,**d)
 	page += config_form()
 	page += test_donation_button()
 	page += test_extralife_button()
@@ -114,7 +117,7 @@ def test_extralife_button():
 
 def config_form():
 	donations_page = read_setting('donations_page','')
-	refresh = read_setting('refresh',60)
+	refresh = read_setting('refresh',default_refresh)
 	
 	form = ""
 	form += "<form action='http://localhost:8080/control' method='post'>\n"
@@ -177,15 +180,21 @@ def get_token():
 	else:
 		return read_setting('access_token')
 
-def post_donation(**kwargs):
-	data = {	'access_token': get_token(),
-				'name': kwargs['name'],
-				'identifier': kwargs['identifier'],
-				'amount': kwargs['amount'],
-				'currency': kwargs.get('currency','USD'),
-				'message': kwargs.get('message',None)}
-	r = requests.post("https://www.twitchalerts.com/api/v1.0/donations", data=data)
-	return r.json()
+def post_donation(override=False,**kwargs):
+	posted = read_setting('posted_donations',[])
+	if kwargs['identifier'] not in posted or override:
+		data = {	'access_token': get_token(),
+					'name': kwargs['name'],
+					'identifier': kwargs['identifier'],
+					'amount': kwargs['amount'],
+					'currency': kwargs.get('currency','USD'),
+					'message': kwargs.get('message',None)}
+		r = requests.post("https://www.twitchalerts.com/api/v1.0/donations", data=data)
+		posted.append(kwargs['identifier'])
+		write_setting('posted_donations',posted)
+		print_donation(kwargs)
+
+	
 
 def get_username(token):
 	url = 'https://www.twitchalerts.com/api/v1.0/user'
@@ -193,6 +202,31 @@ def get_username(token):
 	headers={'content-type': 'application/json'}
 	r = requests.get(url, headers=headers,params=params)
 	return r.json()
+
+def verify_setup():
+	required = []
+	required.append(read_setting('client_id'))
+	required.append(read_setting('client_secret'))
+	required.append(read_setting('refresh_token'))
+	required.append(read_setting('access_token'))
+	required.append(read_setting('donations_page'))
+	verified = True
+	for r in required:
+		if r is None:
+			verified = False
+	return verified
+
+
+
+def threaded_donation_scan(start_in=0):
+	while not verify_setup():
+		time.sleep(10)
+	time.sleep(start_in)
+	donations = get_extralife_donations()
+	for d in donations:
+		post_donation(**d)
+	threaded_donation_scan(start_in=read_setting('refresh',default_refresh))
+
 
 def get_extralife_donations():
 	donations_page = read_setting('donations_page')
@@ -222,7 +256,7 @@ def read_setting(setting,default=None):
 		pass
 	configfile_locked = True
 	settings = shelve.open('config')
-	value = settings.get(setting,None)
+	value = settings.get(setting,default)
 	settings.close()
 	configfile_locked = False
 	return value
@@ -238,4 +272,14 @@ def write_setting(setting,value):
 	configfile_locked = False
 
 if __name__ == '__main__':
+
+	if verify_setup():
+		print("\nTo change settings point browser to http://localhost:8080\n")
+	else:
+		print("\nTo setup point web browser to http://localhost:8080\n")
+
+	refreshThread = threading.Thread(target=threaded_donation_scan)
+
+	refreshThread.start()
+
 	app.run(debug=False, port=8080)
