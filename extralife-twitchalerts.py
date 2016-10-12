@@ -10,11 +10,12 @@ import time
 
 from flask import Flask, redirect, abort, request
 
-import configparser
+import shelve
 
-config = configparser.ConfigParser()
-config.read('config.ini')
-settings = config['settings']
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
 
 configfile_locked = False
 
@@ -31,8 +32,8 @@ app = Flask(__name__)
 
 @app.route('/')
 def homepage():
-	login_status = settings.get('refresh_token',None)
-	registered_status = settings.get('client_id',None)
+	login_status = read_setting('refresh_token')
+	registered_status = read_setting('client_id')
 	if registered_status is None:
 		return redirect('http://localhost:8080/initial_setup')
 	elif login_status is None:
@@ -43,9 +44,8 @@ def homepage():
 @app.route('/initial_setup', methods=["GET","POST"])
 def initial_setup():
 	if request.method == "POST":
-		settings['client_id'] = request.form['client_id']
-		settings['client_secret'] = request.form['client_secret']
-		write_config()
+		write_setting('client_id',request.form['client_id'])
+		write_setting('client_secret',request.form['client_secret'])
 		return redirect('http://localhost:8080/authorize')
 	else:
 		page = "<form action='http://localhost:8080/initial_setup' method='post'>\n"
@@ -72,14 +72,14 @@ def control():
 			page += "<p>Test donation posted.</p>"
 			page += str(result)
 		elif request.form['action'] == 'config':
-			settings['donations_page'] = request.form['donations_page']
-			settings['refresh'] = request.form['refresh']
-			write_config()
+			write_setting('donations_page',request.form['donations_page'])
+			write_setting('refresh',request.form['refresh'])
 			page += "<p>Settings updated.</p>"
 		elif request.form['action'] == 'test_extralife':
 			donations = get_extralife_donations()
 			for d in donations:
 				post_donation(**d)
+				print_donation(d)
 	page += config_form()
 	page += test_donation_button()
 	page += test_extralife_button()
@@ -94,15 +94,6 @@ def twitchalerts():
 	code = request.args.get('code')
 	init_token(code)
 	return redirect("http://localhost:8080/control")
-
-def write_config():
-	global configfile_locked
-	while configfile_locked:
-		pass
-	configfile_locked = True
-	with open('config.ini','w') as configfile:
-		config.write(configfile)
-	configfile_locked = False
 
 
 def test_donation_button():
@@ -122,8 +113,8 @@ def test_extralife_button():
 	return form
 
 def config_form():
-	donations_page = settings.get('donations_page','')
-	refresh = int(settings.get('refresh'))
+	donations_page = read_setting('donations_page','')
+	refresh = read_setting('refresh',60)
 	
 	form = ""
 	form += "<form action='http://localhost:8080/control' method='post'>\n"
@@ -141,7 +132,7 @@ def make_hidden_inputs():
 	#from uuid import uuid4
 	#state = str(uuid4())
 	#save_created_state(state)
-	params = {"client_id": settings['client_id'],
+	params = {"client_id": read_setting('client_id'),
 				"response_type": "code",
 				#"state": state,
 				"redirect_uri": redirect_uri,
@@ -155,20 +146,19 @@ def make_hidden_inputs():
 
 
 def init_token(code):
-	client_auth = requests.auth.HTTPBasicAuth(settings['client_id'], settings['client_secret'])
+	client_auth = requests.auth.HTTPBasicAuth(read_setting('client_id'), read_setting('client_secret'))
 	post_data = {	"grant_type": "authorization_code",
 					"code": code,
 					"redirect_uri": redirect_uri}
 	response = requests.post(token_uri,auth=client_auth,data=post_data)
 	token_json = response.json()
-	settings['access_token'] = token_json['access_token']
-	settings['refresh_token'] = token_json['refresh_token']
-	settings['token_created_at'] = str(time.time())
-	write_config()
+	write_setting('access_token',token_json['access_token'])
+	write_setting('refresh_token',token_json['refresh_token'])
+	write_setting('token_created_at',time.time())
 	return token_json["access_token"]
 
 def renew_token():
-	client_auth = requests.auth.HTTPBasicAuth(client_id, client_secret)
+	client_auth = requests.auth.HTTPBasicAuth(read_setting('client_id'), read_setting('client_secret'))
 	post_data = {	"grant_type": "refresh_token",
 					"client_id": client_id,
 					"client_secret": client_secret,
@@ -176,17 +166,16 @@ def renew_token():
 					"refresh_token": settings['refresh_token']}
 	response = requests.post(token_uri,auth=client_auth,data=post_data)
 	token_json = response.json()
-	settings['access_token'] = token_json['access_token']
-	settings['refresh_token'] = token_json['refresh_token']
-	settings['token_created_at'] = time.time()
-	write_config()
+	write_setting('access_token',token_json['access_token'])
+	write_setting('refresh_token',token_json['refresh_token'])
+	write_setting('token_created_at',time.time())
 	return token_json['access_token']
 
 def get_token():
-	if time.time() > float(settings['token_created_at']) + token_expiry:
+	if time.time() > read_setting('token_created_at') + token_expiry:
 		return renew_token()
 	else:
-		return settings['access_token']
+		return read_setting('access_token')
 
 def post_donation(**kwargs):
 	data = {	'access_token': get_token(),
@@ -206,12 +195,11 @@ def get_username(token):
 	return r.json()
 
 def get_extralife_donations():
-	if settings.get('donations_page',None) is not None and settings['donations_page'] != '':
+	donations_page = read_setting('donations_page')
+	if donations_page is not None and donations_page != '':
 		params = {'format':'json'}
-		r = requests.get(settings['donations_page'], headers=headers, params=params)
+		r = requests.get(donations_page, headers=headers, params=params)
 		results = r.json()
-		print('Results:')
-		print(results)
 		donations = []
 		for donation in results:
 			identifier = ("%s %s" % (donation['createdOn'],donation['donorName'])).encode()
@@ -220,13 +208,34 @@ def get_extralife_donations():
 								'identifier':hashlib.md5(identifier).hexdigest(),
 								'amount':donation['donationAmount'],
 								'created_at':donation['createdOn']})
-		print(donations)
 		return donations
 	else:
 		return None
 
+def print_donation(donation):
+	print("[%s] Received donation from: %s Amount: $%s" % (time.strftime('%I:%M %p'), donation['name'], donation['amount']))
 
 
+def read_setting(setting,default=None):
+	global configfile_locked
+	while configfile_locked:
+		pass
+	configfile_locked = True
+	settings = shelve.open('config')
+	value = settings.get(setting,None)
+	settings.close()
+	configfile_locked = False
+	return value
+
+def write_setting(setting,value):
+	global configfile_locked
+	while configfile_locked:
+		pass
+	configfile_locked = True
+	settings = shelve.open('config')
+	settings[setting] = value
+	settings.close()
+	configfile_locked = False
 
 if __name__ == '__main__':
-	app.run(debug=True, port=8080)
+	app.run(debug=False, port=8080)
