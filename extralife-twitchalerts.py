@@ -237,7 +237,7 @@ def get_extralife_donations():
 		donations = []
 		for donation in results:
 			identifier = ("%s %s" % (donation['createdOn'],donation['donorName'])).encode()
-			donations.append({	'name':donation['donorName'].replace(' ','_'),
+			donations.append({	'name':validate_name(donation['donorName']),
 								'message':donation['message'],
 								'identifier':hashlib.md5(identifier).hexdigest(),
 								'amount':donation['donationAmount'],
@@ -270,6 +270,15 @@ def write_setting(setting,value):
 	settings[setting] = value
 	settings.close()
 	configfile_locked = False
+
+def validate_name(name):
+	valid_name = ""
+	for char in name:
+		if char == " ":
+			valid_name += "_"
+		elif char.isalnum():
+			valid_name += char
+	return valid_name
 
 if __name__ == '__main__':
 
