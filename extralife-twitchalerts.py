@@ -163,10 +163,10 @@ def init_token(code):
 def renew_token():
 	client_auth = requests.auth.HTTPBasicAuth(read_setting('client_id'), read_setting('client_secret'))
 	post_data = {	"grant_type": "refresh_token",
-					"client_id": client_id,
-					"client_secret": client_secret,
+					"client_id": read_setting('client_id'),
+					"client_secret": read_setting('client_secret'),
 					"redirect_uri": redirect_uri,
-					"refresh_token": settings['refresh_token']}
+					"refresh_token": read_setting('refresh_token')}
 	response = requests.post(token_uri,auth=client_auth,data=post_data)
 	token_json = response.json()
 	write_setting('access_token',token_json['access_token'])
@@ -273,11 +273,14 @@ def write_setting(setting,value):
 
 def validate_name(name):
 	valid_name = ""
-	for char in name:
-		if char == " ":
-			valid_name += "_"
-		elif char.isalnum():
-			valid_name += char
+	if name is not None:
+		for char in name:
+			if char == " ":
+				valid_name += "_"
+			elif char.isalnum():
+				valid_name += char
+	else:
+		valid_name = "Anonymous"
 	return valid_name
 
 if __name__ == '__main__':
