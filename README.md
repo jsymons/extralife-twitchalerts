@@ -2,7 +2,7 @@
 #Extra Life Twitch Alerts
 
 ###Download Link
-Visit https://github.com/jsymons/extralife-twitchalerts/releases/tag/v1.0
+Visit https://github.com/jsymons/extralife-twitchalerts/releases/tag/v1.1
 
 ###Instructions
 
